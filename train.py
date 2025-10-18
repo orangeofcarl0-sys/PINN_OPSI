@@ -60,21 +60,14 @@ def reconstruct_spectra_tf(
 
 class PINN_Model(Model):
     def __init__(self, core_model, lambda_phys=0.5, **kwargs):
-        """
-        一个包含物理知情损失的自定义Keras模型。
-
-        参数:
-            core_model (Model): 我们之前构建的CNN-LSTM模型。
-            lambda_phys (float): 物理损失的权重 λ。
-        """
         super().__init__(**kwargs)
         self.core_model = core_model
         self.lambda_phys = lambda_phys
         
-        # 创建频率轴 (一次性创建，作为常量)
         self.freq_axis_thz = tf.constant(np.linspace(190, 198, 2048), dtype=tf.float32)
         
-        # 定义损失跟踪器
+        self.mse_loss_fn = tf.keras.losses.MeanSquaredError()
+        
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
         self.data_loss_tracker = tf.keras.metrics.Mean(name="data_loss")
         self.phys_loss_tracker = tf.keras.metrics.Mean(name="phys_loss")
@@ -82,47 +75,45 @@ class PINN_Model(Model):
     def compile(self, optimizer, **kwargs):
         super().compile(**kwargs)
         self.optimizer = optimizer
-        # 我们不再需要 'loss' 参数，因为损失计算在 train_step 中
     
+    # --- FIX: Implement the required call() method ---
+    # 这个方法定义了模型的前向传播逻辑
+    def call(self, inputs):
+        """
+        定义模型在推理模式下的前向传播。
+        """
+        return self.core_model(inputs)
+
     @property
     def metrics(self):
-        # 定义我们希望在训练过程中监控的指标
         return [self.loss_tracker, self.data_loss_tracker, self.phys_loss_tracker]
 
     def train_step(self, data):
-        # --- FIX: Keras passes data as a tuple, potentially with sample_weights ---
-        # We explicitly unpack only the first two elements we need: inputs and labels.
         if isinstance(data, tuple):
             x, y_true = data[0], data[1]
         else:
-            # Fallback for other data formats if needed
             x, y_true = data
-    
+
         with tf.GradientTape() as tape:
-            # ... a reste du code reste inchangé ...
-            # 1. 前向传播，获取预测的物理参数
-            y_pred = self.core_model(x, training=True) # (batch, 5)
-    
-            # 2. 计算数据损失 (L_data) - 有监督
-            data_loss = tf.keras.losses.mean_squared_error(y_true, y_pred[:, :2])
-    
-            # 3. 物理重构
+            # 注意：在train_step内部，我们仍然直接调用core_model
+            # 因为我们需要控制 training=True 参数
+            y_pred = self.core_model(x, training=True)
+
+            data_loss = self.mse_loss_fn(y_true, y_pred[:, :2])
+
             Ip_input = x[:, :, 0]
             Is_input = x[:, :, 1]
             Ip_recon, Is_recon = reconstruct_spectra_tf(y_pred, self.freq_axis_thz)
-    
-            # 4. 计算物理损失 (L_phys) - 无监督
-            phys_loss_p = tf.keras.losses.mean_squared_error(Ip_input, Ip_recon)
-            phys_loss_s = tf.keras.losses.mean_squared_error(Is_input, Is_recon)
+
+            phys_loss_p = self.mse_loss_fn(Ip_input, Ip_recon)
+            phys_loss_s = self.mse_loss_fn(Is_input, Is_recon)
             phys_loss = phys_loss_p + phys_loss_s
-    
-            # 5. 计算总损失
+
             total_loss = (1.0 - self.lambda_phys) * data_loss + self.lambda_phys * phys_loss
         
-        # ... a reste du code reste inchangé ...
         grads = tape.gradient(total_loss, self.core_model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.core_model.trainable_variables))
-    
+
         self.loss_tracker.update_state(total_loss)
         self.data_loss_tracker.update_state(data_loss)
         self.phys_loss_tracker.update_state(phys_loss)
