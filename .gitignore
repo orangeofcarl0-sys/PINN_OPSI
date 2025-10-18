@@ -1,0 +1,14 @@
+# Python virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Large data files - NEVER commit these!
+*.h5
+*.hdf5
+
+# IDE/Editor specific files (optional but good practice)
+.idea/
+.vscode/
