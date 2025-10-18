@@ -1,14 +1,24 @@
-# Python virtual environment
+# Python & IDE
 venv/
-
-# Python cache files
+.venv/
 __pycache__/
 *.pyc
-
-# Large data files - NEVER commit these!
-*.h5
-*.hdf5
-
-# IDE/Editor specific files (optional but good practice)
 .idea/
 .vscode/
+
+# Data & Models - 永远不要提交大型数据和训练好的模型！
+*.h5
+*.hdf5
+*.csv
+*.pkl
+*.pth
+*.pt
+*.onnx
+data/
+datasets/
+models/
+
+# Logs & Outputs
+logs/
+results/
+*.log
