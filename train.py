@@ -2,6 +2,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model, optimizers
 import h5py
 import numpy as np
+from tensorflow.keras import callbacks
 
 # 从我们之前的文件中导入模型构建函数和物理仿真函数
 from model import build_pinn_cnn_lstm_model
@@ -89,36 +90,39 @@ class PINN_Model(Model):
         return [self.loss_tracker, self.data_loss_tracker, self.phys_loss_tracker]
 
     def train_step(self, data):
-        x, y_true = data
-        # x: 输入光谱 (batch, seq_length, 2)
-        # y_true: 真实标签 (batch, 2) -> τ 和 φ
-
+        # --- FIX: Keras passes data as a tuple, potentially with sample_weights ---
+        # We explicitly unpack only the first two elements we need: inputs and labels.
+        if isinstance(data, tuple):
+            x, y_true = data[0], data[1]
+        else:
+            # Fallback for other data formats if needed
+            x, y_true = data
+    
         with tf.GradientTape() as tape:
+            # ... a reste du code reste inchangé ...
             # 1. 前向传播，获取预测的物理参数
             y_pred = self.core_model(x, training=True) # (batch, 5)
-
+    
             # 2. 计算数据损失 (L_data) - 有监督
-            # 我们只用 τ 和 φ 计算数据损失
             data_loss = tf.keras.losses.mean_squared_error(y_true, y_pred[:, :2])
-
+    
             # 3. 物理重构
             Ip_input = x[:, :, 0]
             Is_input = x[:, :, 1]
             Ip_recon, Is_recon = reconstruct_spectra_tf(y_pred, self.freq_axis_thz)
-
+    
             # 4. 计算物理损失 (L_phys) - 无监督
             phys_loss_p = tf.keras.losses.mean_squared_error(Ip_input, Ip_recon)
             phys_loss_s = tf.keras.losses.mean_squared_error(Is_input, Is_recon)
             phys_loss = phys_loss_p + phys_loss_s
-
+    
             # 5. 计算总损失
             total_loss = (1.0 - self.lambda_phys) * data_loss + self.lambda_phys * phys_loss
         
-        # 6. 反向传播
+        # ... a reste du code reste inchangé ...
         grads = tape.gradient(total_loss, self.core_model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.core_model.trainable_variables))
-
-        # 7. 更新并返回监控指标
+    
         self.loss_tracker.update_state(total_loss)
         self.data_loss_tracker.update_state(data_loss)
         self.phys_loss_tracker.update_state(phys_loss)
@@ -140,40 +144,126 @@ def load_data(filepath):
     
     return x, y
 
+
 if __name__ == '__main__':
-    # --- 1. 参数定义 ---
+    # --- 1. 参数定义 (超参数化，方便管理) ---
+    # 数据参数
     SEQUENCE_LENGTH = 2048
+    
+    # 模型参数
     NUM_PHYSICAL_PARAMS = 5
-    LAMBDA_PHYS = 0.5 # 物理损失权重，这是一个可以调整的关键超参数
+    
+    # 训练参数
+    LAMBDA_PHYS = 0.5       # 物理损失权重 (关键超参数)
     LEARNING_RATE = 1e-3
     BATCH_SIZE = 64
-    EPOCHS = 5 # 先用少量周期进行测试
+    EPOCHS = 200            # 设定一个较高的上限，让早停来决定何时停止
+
+    # 回调函数参数
+    EARLY_STOPPING_PATIENCE = 20 # 如果验证损失20个周期不下降，则停止
+    LR_SCHEDULER_PATIENCE = 10   # 如果验证损失10个周期不下降，则降低学习率
+    LR_SCHEDULER_FACTOR = 0.5    # 学习率降低的因子
+    
+    # 文件路径
+    TRAIN_DATA_PATH = 'opsi_dataset_train.h5'
+    VAL_DATA_PATH = 'opsi_dataset_val.h5'
+    MODEL_SAVE_PATH = 'best_pinn_model.h5' # 保存最佳模型的路径
 
     # --- 2. 加载数据 ---
-    print("正在加载训练数据...")
-    x_train, y_train = load_data('opsi_dataset_train.h5')
-    print(f"训练数据加载完成。输入形状: {x_train.shape}, 标签形状: {y_train.shape}")
+    print("正在加载训练和验证数据...")
+    x_train, y_train = load_data(TRAIN_DATA_PATH)
+    x_val, y_val = load_data(VAL_DATA_PATH)
+    print("数据加载完成。")
+    print(f"训练集形状: x={x_train.shape}, y={y_train.shape}")
+    print(f"验证集形状: x={x_val.shape}, y={y_val.shape}")
 
     # --- 3. 构建并编译模型 ---
-    # 构建核心的CNN-LSTM模型
     core_model = build_pinn_cnn_lstm_model(
         seq_length=SEQUENCE_LENGTH,
         num_outputs=NUM_PHYSICAL_PARAMS
     )
+    pinn_model = PINN_Model(core_model=core_model, lambda_phys=LAMBDA_PHYS)
+    pinn_model.compile(optimizer=optimizers.Adam(learning_rate=LEARNING_RATE))
+    
+    # 这一步是为了让Keras模型知道输入的形状，以便后续保存和加载
+    # 我们“假装”训练一个样本
+    pinn_model.train_on_batch(x_train[:1], y_train[:1])
+    print("\n模型构建并编译完成。")
     core_model.summary()
 
-    # 将核心模型包装进我们的PINN模型中
-    pinn_model = PINN_Model(core_model=core_model, lambda_phys=LAMBDA_PHYS)
+    # --- 4. 定义回调函数 (Callbacks) ---
+    # 这是实现智能化训练的关键
+    
+    # (a) 模型检查点 (Model Checkpoint): 只保存验证损失最低的那个模型
+    checkpoint_cb = callbacks.ModelCheckpoint(
+        filepath=MODEL_SAVE_PATH,
+        monitor='val_loss', # 监控验证集的总损失
+        save_best_only=True,
+        save_weights_only=False, # 保存完整模型
+        mode='min',
+        verbose=1
+    )
 
-    # 编译PINN模型
-    pinn_model.compile(optimizer=optimizers.Adam(learning_rate=LEARNING_RATE))
+    # (b) 早停 (Early Stopping): 防止过拟合和浪费时间
+    early_stopping_cb = callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=EARLY_STOPPING_PATIENCE,
+        mode='min',
+        verbose=1,
+        restore_best_weights=True # 训练结束后，自动恢复到最佳权重
+    )
 
-    # --- 4. 开始训练 ---
-    print("\n开始训练PINN模型...")
+    # (c) 学习率调度器 (Learning Rate Scheduler)
+    reduce_lr_cb = callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=LR_SCHEDULER_FACTOR,
+        patience=LR_SCHEDULER_PATIENCE,
+        mode='min',
+        verbose=1
+    )
+    
+    # 将所有回调函数放入一个列表
+    training_callbacks = [checkpoint_cb, early_stopping_cb, reduce_lr_cb]
+
+    # --- 5. 开始训练 ---
+    print("\n" + "="*50)
+    print("           开始完整训练")
+    print("="*50)
+    
     history = pinn_model.fit(
         x_train, y_train,
         batch_size=BATCH_SIZE,
-        epochs=EPOCHS
-        # 可以在这里添加验证集: validation_data=(x_val, y_val)
+        epochs=EPOCHS,
+        validation_data=(x_val, y_val),
+        callbacks=training_callbacks,
+        verbose=1
     )
-    print("训练完成！")
+    
+    print("\n训练完成！")
+    print(f"最佳模型已保存至: {MODEL_SAVE_PATH}")
+
+    # --- 6. (可选) 绘制训练历史曲线 ---
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Total Loss over Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['data_loss'], label='Training Data Loss')
+    plt.plot(history.history['val_data_loss'], label='Validation Data Loss') # Keras会自动添加val_前缀
+    plt.plot(history.history['phys_loss'], label='Training Physics Loss')
+    plt.plot(history.history['val_phys_loss'], label='Validation Physics Loss')
+    plt.title('Component Losses over Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('training_history.png')
+    print("训练历史曲线已保存为 training_history.png")
+    plt.show()
