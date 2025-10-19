@@ -185,7 +185,7 @@ if __name__ == '__main__':
     # 文件路径
     TRAIN_DATA_PATH = 'opsi_dataset_train.h5'
     VAL_DATA_PATH = 'opsi_dataset_val.h5'
-    MODEL_SAVE_PATH = 'best_pinn_model.h5' # 保存最佳模型的路径
+    MODEL_SAVE_PATH = 'best_pinn_model.keras' # 保存最佳模型的路径
 
     # --- 2. 加载数据 ---
     print("正在加载训练和验证数据...")
