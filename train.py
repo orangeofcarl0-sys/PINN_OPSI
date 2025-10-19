@@ -4,6 +4,8 @@ import h5py
 import numpy as np
 from tensorflow.keras import callbacks
 import datetime
+from sklearn.preprocessing import MinMaxScaler
+import joblib
 
 # 从我们之前的文件中导入模型构建函数和物理仿真函数
 from model import build_pinn_cnn_lstm_model
@@ -187,6 +189,8 @@ if __name__ == '__main__':
     VAL_DATA_PATH = 'opsi_dataset_val.h5'
     MODEL_SAVE_PATH = 'best_pinn_model.keras' # 保存最佳模型的路径
 
+    SCALER_SAVE_PATH = 'tau_scaler.gz' # 保存缩放器的路径
+    
     # --- 2. 加载数据 ---
     print("正在加载训练和验证数据...")
     x_train, y_train = load_data(TRAIN_DATA_PATH)
@@ -195,6 +199,28 @@ if __name__ == '__main__':
     print(f"训练集形状: x={x_train.shape}, y={y_train.shape}")
     print(f"验证集形状: x={x_val.shape}, y={y_val.shape}")
 
+    # --- NEW: 标签归一化步骤 ---
+    print("\n正在进行标签归一化...")
+    
+    # 2.1 创建并只在训练集的τ上拟合缩放器
+    tau_scaler = MinMaxScaler(feature_range=(0, 1))
+    # y_train[:, 0] 是所有τ标签。reshape(-1, 1)是sklearn的要求
+    tau_scaler.fit(y_train[:, 0].reshape(-1, 1))
+    
+    # 2.2 保存这个至关重要的缩放器
+    joblib.dump(tau_scaler, SCALER_SAVE_PATH)
+    print(f"τ缩放器已创建并保存至 {SCALER_SAVE_PATH}")
+    print(f"τ的原始范围 (min, max): ({tau_scaler.data_min_[0]:.2f}, {tau_scaler.data_max_[0]:.2f})")
+
+    # 2.3 使用已拟合的缩放器转换训练集和验证集的标签
+    # 创建副本以避免修改原始数据
+    y_train_scaled = np.copy(y_train)
+    y_val_scaled = np.copy(y_val)
+    
+    y_train_scaled[:, 0] = tau_scaler.transform(y_train[:, 0].reshape(-1, 1)).flatten()
+    y_val_scaled[:, 0] = tau_scaler.transform(y_val[:, 0].reshape(-1, 1)).flatten()
+    print("训练集和验证集的τ标签已归一化至 [0, 1] 范围。")
+    
     # --- 3. 构建并编译模型 ---
     core_model = build_pinn_cnn_lstm_model(
         seq_length=SEQUENCE_LENGTH,
@@ -255,14 +281,14 @@ if __name__ == '__main__':
 
     # --- 5. 开始训练 ---
     print("\n" + "="*50)
-    print("           开始完整训练")
+    print("           开始归一化标签完整训练")
     print("="*50)
     
     history = pinn_model.fit(
-        x_train, y_train,
+        x_train, y_train_scaled, # <--- 使用归一化后的训练标签
         batch_size=BATCH_SIZE,
         epochs=EPOCHS,
-        validation_data=(x_val, y_val),
+        validation_data=(x_val, y_val_scaled), # <--- 使用归一化后的验证标签
         callbacks=training_callbacks,
         verbose=1
     )
