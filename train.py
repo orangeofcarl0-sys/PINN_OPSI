@@ -3,6 +3,7 @@ from tensorflow.keras import layers, Model, optimizers
 import h5py
 import numpy as np
 from tensorflow.keras import callbacks
+import datetime
 
 # 从我们之前的文件中导入模型构建函数和物理仿真函数
 from model import build_pinn_cnn_lstm_model
@@ -239,8 +240,18 @@ if __name__ == '__main__':
         verbose=1
     )
     
+    # --- NEW: (d) TensorBoard 回调 ---
+    # 为每次运行创建一个唯一的日志目录，以时间戳命名
+    log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tensorboard_cb = callbacks.TensorBoard(
+        log_dir=log_dir,
+        histogram_freq=1,  # 每个epoch都记录权重直方图，用于深度分析
+        write_graph=True,
+        write_images=False
+    )
+
     # 将所有回调函数放入一个列表
-    training_callbacks = [checkpoint_cb, early_stopping_cb, reduce_lr_cb]
+    training_callbacks = [checkpoint_cb, early_stopping_cb, reduce_lr_cb, tensorboard_cb] # 新的列表
 
     # --- 5. 开始训练 ---
     print("\n" + "="*50)
