@@ -75,6 +75,38 @@ class PINN_Model(Model):
         self.data_loss_tracker = tf.keras.metrics.Mean(name="data_loss")
         self.phys_loss_tracker = tf.keras.metrics.Mean(name="phys_loss")
 
+    # --- FIX: Implement the get_config() method ---
+    def get_config(self):
+        """
+        重写此方法，以确保模型可以被正确序列化。
+        返回一个包含所有构造函数参数的字典。
+        """
+        # 1. 获取父类的基本配置 (如 name, dtype)
+        base_config = super().get_config()
+        
+        # 2. 添加我们自定义的构造函数参数
+        config = {
+            # Keras会自动处理嵌套的模型/层
+            "core_model": tf.keras.utils.serialize_keras_object(self.core_model),
+            "lambda_phys": self.lambda_phys,
+        }
+        
+        # 3. 合并并返回最终配置
+        return {**base_config, **config}
+
+    # --- (可选但推荐) 实现 from_config 以获得更强的鲁棒性 ---
+    @classmethod
+    def from_config(cls, config):
+        """
+        从配置字典重新创建模型实例。
+        """
+        # 反序列化嵌套的模型
+        core_model_config = config.pop("core_model")
+        core_model = tf.keras.layers.deserialize(core_model_config)
+        
+        # 使用剩余的配置创建实例
+        return cls(core_model, **config)
+    
     def compile(self, optimizer, **kwargs):
         super().compile(**kwargs)
         self.optimizer = optimizer
