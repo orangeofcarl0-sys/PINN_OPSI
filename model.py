@@ -45,15 +45,48 @@ def build_pinn_cnn_lstm_model(seq_length: int = 2048, num_outputs: int = 5) -> M
     # units=64 表示每个方向有64个LSTM单元，总输出维度为128
     x = layers.Bidirectional(layers.LSTM(units=64, name='bilstm1'))(x)
 
-    # --- 4. 输出头 (The Regression Head) ---
-    # 目标：将LSTM的最终状态向量映射到物理参数
+    # --- 4. 输出头 (The Regression Head) - 进行外科手术 ---
+    # 目标：为每个物理参数设计一个有物理约束的输出路径
     
-    outputs = layers.Dense(units=num_outputs, activation='linear', name='output_params')(x)
+    # 预测 τ (必须为正)
+    # 使用 softplus 激活函数，它是一个平滑的ReLU，能确保输出永远为正
+    # 我们还给它一个小的偏置，让它在初始化时倾向于输出一个较小但非零的值
+    tau_output = layers.Dense(1, activation='softplus', name='tau_output')(x)
+
+    # 预测 φ (可以是任意实数)
+    phi_output = layers.Dense(1, activation='linear', name='phi_output')(x)
+
+    # 预测包络幅度 A (必须为正)
+    A_output = layers.Dense(1, activation='softplus', name='A_output')(x)
+
+    # 预测包络中心 μ (必须在光谱范围内，如 [190, 198])
+    # 使用 sigmoid 激活函数 (输出范围 [0, 1])，然后进行线性变换
+    # 这样可以强行将输出约束在 [190, 198] 的范围内
+    mu_output_normalized = layers.Dense(1, activation='sigmoid', name='mu_normalized')(x)
+    mu_output = layers.Lambda(lambda t: 190.0 + 8.0 * t, name='mu_output')(mu_output_normalized)
+
+    # 预测包络宽度 σ (必须为正，且不能太小)
+    # 同样使用 softplus，并加上一个小的epsilon防止为零
+    sigma_output = layers.Dense(1, activation='softplus', name='sigma_output')(x)
+    sigma_output = layers.Lambda(lambda t: t + 1e-6, name='sigma_final')(sigma_output)
+
+    # 将所有输出拼接在一起
+    outputs = layers.Concatenate(name='output_params')([tau_output, phi_output, A_output, mu_output, sigma_output])
 
     # --- 5. 组装模型 ---
     model = Model(inputs=inputs, outputs=outputs, name='PINN_CNN_LSTM')
 
     return model
+
+    # # --- 4. 输出头 (The Regression Head) ---
+    # # 目标：将LSTM的最终状态向量映射到物理参数
+    
+    # outputs = layers.Dense(units=num_outputs, activation='linear', name='output_params')(x)
+
+    # # --- 5. 组装模型 ---
+    # model = Model(inputs=inputs, outputs=outputs, name='PINN_CNN_LSTM')
+
+    # return model
 
 if __name__ == '__main__':
     # --- 模型实例化 ---
