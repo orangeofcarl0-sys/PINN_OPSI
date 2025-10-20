@@ -9,6 +9,7 @@ __pycache__/
 # Data & Models - 永远不要提交大型数据和训练好的模型！
 *.h5
 *.keras
+*.gz
 *.hdf5
 *.csv
 *.pkl
